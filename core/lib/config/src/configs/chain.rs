@@ -367,7 +367,21 @@ mod tests {
                 http_file_url: "http://deployment-allowlist/".to_owned(),
                 refresh_interval: Duration::from_secs(120),
             })),
-            dynamic_batching: DynamicBatchingConfig::default(),
+            dynamic_batching: DynamicBatchingConfig {
+                enabled: false,
+                n_min: 50,
+                n_max: Some(200),
+                grid_step: 10,
+                gamma: 15.0,
+                bytes_per_tx: 30,
+                blob_size_bytes: 131_072,
+                l1_verify_gas: 350_000,
+                prover_fixed_seconds: 0.0,
+                prover_seconds_per_tx: 0.2,
+                l1_settlement_seconds: 12.0,
+                lambda_ema_alpha: 0.2,
+                metrics_csv_path: Some("/tmp/dynamic_batching.csv".to_owned()),
+            },
         }
     }
 
@@ -402,6 +416,19 @@ mod tests {
             CHAIN_STATE_KEEPER_DEPLOYMENT_ALLOWLIST_SOURCE=Dynamic
             CHAIN_STATE_KEEPER_DEPLOYMENT_ALLOWLIST_HTTP_FILE_URL=http://deployment-allowlist/
             CHAIN_STATE_KEEPER_DEPLOYMENT_ALLOWLIST_REFRESH_INTERVAL=2 min
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_ENABLED=false
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_N_MIN=50
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_N_MAX=200
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_GRID_STEP=10
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_GAMMA=15.0
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_BYTES_PER_TX=30
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_BLOB_SIZE_BYTES=131072
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_L1_VERIFY_GAS=350000
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_PROVER_FIXED_SECONDS=0.0
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_PROVER_SECONDS_PER_TX=0.2
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_L1_SETTLEMENT_SECONDS=12.0
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_LAMBDA_EMA_ALPHA=0.2
+            CHAIN_STATE_KEEPER_DYNAMIC_BATCHING_METRICS_CSV_PATH=/tmp/dynamic_batching.csv
         "#;
         let env = Environment::from_dotenv("test.env", env)
             .unwrap()
@@ -442,6 +469,20 @@ mod tests {
             source: Url
             http_file_url: http://deployment-allowlist/
             refresh_interval_secs: 120
+          dynamic_batching:
+            enabled: false
+            n_min: 50
+            n_max: 200
+            grid_step: 10
+            gamma: 15.0
+            bytes_per_tx: 30
+            blob_size_bytes: 131072
+            l1_verify_gas: 350000
+            prover_fixed_seconds: 0.0
+            prover_seconds_per_tx: 0.2
+            l1_settlement_seconds: 12.0
+            lambda_ema_alpha: 0.2
+            metrics_csv_path: /tmp/dynamic_batching.csv
         "#;
 
         let yaml = Yaml::new("test.yml", serde_yaml::from_str(yaml).unwrap()).unwrap();
@@ -481,6 +522,20 @@ mod tests {
             source: Url
             http_file_url: http://deployment-allowlist/
             refresh_interval: 2min
+          dynamic_batching:
+            enabled: false
+            n_min: 50
+            n_max: 200
+            grid_step: 10
+            gamma: 15.0
+            bytes_per_tx: 30
+            blob_size_bytes: 131072
+            l1_verify_gas: 350000
+            prover_fixed_seconds: 0.0
+            prover_seconds_per_tx: 0.2
+            l1_settlement_seconds: 12.0
+            lambda_ema_alpha: 0.2
+            metrics_csv_path: /tmp/dynamic_batching.csv
         "#;
 
         let yaml = Yaml::new("test.yml", serde_yaml::from_str(yaml).unwrap()).unwrap();
