@@ -222,6 +222,16 @@ pub(super) struct TxAggregationMetrics {
     l2_block_reason: Family<L2BlockSealReason, Counter>,
     #[metrics(labels = ["criterion"], buckets = Buckets::ZERO_TO_ONE, unit = Unit::Ratios)]
     criterion_capacity_filled: LabeledFamily<&'static str, Histogram>,
+    #[metrics(buckets = Buckets::linear(10.0, 250.0, 30))]
+    dynamic_optimal_n: Histogram,
+    #[metrics(buckets = Buckets::exponential(0.001..=512.0, 2.0))]
+    dynamic_lambda_ema: Histogram,
+    #[metrics(buckets = Buckets::exponential(1.0..=1.0e20, 10.0))]
+    dynamic_penalty: Histogram,
+    #[metrics(buckets = Buckets::exponential(1.0..=1.0e20, 10.0))]
+    dynamic_cost_per_tx: Histogram,
+    #[metrics(buckets = Buckets::exponential(0.001..=8192.0, 2.0))]
+    dynamic_latency_seconds: Histogram,
 }
 
 impl TxAggregationMetrics {
@@ -247,6 +257,22 @@ impl TxAggregationMetrics {
 
     pub fn record_criterion_capacity(&self, criterion: &'static str, value: f64) {
         self.criterion_capacity_filled[&criterion].observe(value)
+    }
+
+    pub fn record_dynamic_decision(
+        &self,
+        optimal_n: usize,
+        lambda_ema: f64,
+        penalty: f64,
+        cost_per_tx: f64,
+        latency_seconds: f64,
+    ) {
+        self.dynamic_optimal_n.observe(optimal_n as f64);
+        self.dynamic_lambda_ema.observe(lambda_ema.max(0.0));
+        self.dynamic_penalty.observe(penalty.max(0.0));
+        self.dynamic_cost_per_tx.observe(cost_per_tx.max(0.0));
+        self.dynamic_latency_seconds
+            .observe(latency_seconds.max(0.0));
     }
 }
 

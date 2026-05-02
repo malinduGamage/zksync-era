@@ -175,6 +175,9 @@ pub struct StateKeeperConfig {
     /// Allowed deployers for L2 transactions.
     #[config(nest)]
     pub deployment_allowlist: Option<DeploymentAllowlist>,
+    /// Experimental dynamic batching policy for research benchmarking.
+    #[config(nest)]
+    pub dynamic_batching: DynamicBatchingConfig,
 }
 
 impl StateKeeperConfig {
@@ -199,8 +202,53 @@ impl StateKeeperConfig {
             fee_model_version: FeeModelVersion::V2,
             validation_computational_gas_limit: 300000,
             deployment_allowlist: None,
+            dynamic_batching: DynamicBatchingConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, DescribeConfig, DeserializeConfig)]
+#[config(derive(Default))]
+pub struct DynamicBatchingConfig {
+    /// Enables dynamic L1 batch sealing based on cost-latency penalty minimization.
+    #[config(default_t = false)]
+    pub enabled: bool,
+    /// Minimum target size to avoid uneconomical tiny batches.
+    #[config(default_t = 50)]
+    pub n_min: usize,
+    /// Optional explicit upper bound for the optimizer. If omitted, transaction slots are used.
+    #[config(default)]
+    pub n_max: Option<usize>,
+    /// Grid search step size for candidate batch sizes.
+    #[config(default_t = 10)]
+    pub grid_step: usize,
+    /// Weight applied to latency in the penalty function.
+    #[config(default_t = 15.0)]
+    pub gamma: f64,
+    /// Estimated compressed bytes contributed by each transaction.
+    #[config(default_t = 30)]
+    pub bytes_per_tx: u64,
+    /// Effective blob payload size in bytes.
+    #[config(default_t = 131_072)]
+    pub blob_size_bytes: u64,
+    /// Fixed L1 verification/commit gas overhead per batch.
+    #[config(default_t = 350_000)]
+    pub l1_verify_gas: u64,
+    /// Constant proving latency component in seconds.
+    #[config(default_t = 0.0)]
+    pub prover_fixed_seconds: f64,
+    /// Marginal proving latency per transaction in seconds.
+    #[config(default_t = 0.2)]
+    pub prover_seconds_per_tx: f64,
+    /// L1 settlement delay in seconds.
+    #[config(default_t = 12.0)]
+    pub l1_settlement_seconds: f64,
+    /// EMA smoothing factor for transaction arrival rate estimation.
+    #[config(default_t = 0.2, validate(ZERO_TO_ONE))]
+    pub lambda_ema_alpha: f64,
+    /// Optional CSV path to append per-trigger dynamic batching decisions for auditability.
+    #[config(default)]
+    pub metrics_csv_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, DescribeConfig, DeserializeConfig)]
@@ -319,6 +367,7 @@ mod tests {
                 http_file_url: "http://deployment-allowlist/".to_owned(),
                 refresh_interval: Duration::from_secs(120),
             })),
+            dynamic_batching: DynamicBatchingConfig::default(),
         }
     }
 

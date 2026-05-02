@@ -1,13 +1,16 @@
 use std::{
     cmp,
     collections::HashMap,
+    fs::OpenOptions,
+    io::Write,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::Context as _;
 use async_trait::async_trait;
-use zksync_config::configs::chain::StateKeeperConfig;
+use zksync_config::configs::chain::{DynamicBatchingConfig, StateKeeperConfig};
 use zksync_contracts::BaseSystemContracts;
 use zksync_dal::{Connection, ConnectionPool, Core, CoreDal};
 use zksync_eth_client::web3_decl::node::SettlementModeResource;
@@ -43,7 +46,7 @@ use crate::{
         IoSealCriteria, UnexecutableReason,
     },
     updates::UpdatesManager,
-    utils::millis_since_epoch,
+    utils::{millis_since, millis_since_epoch},
     MempoolGuard,
 };
 
@@ -59,6 +62,7 @@ pub struct MempoolIO {
     timeout_sealer: TimeoutSealer,
     l2_block_max_payload_size_sealer: L2BlockMaxPayloadSizeSealer,
     protocol_upgrade_sealer: ProtocolUpgradeSealer,
+    dynamic_batch_sealer: Option<DynamicBatchSealer>,
     filter: L2TxFilter,
     l1_batch_params_provider: L1BatchParamsProvider,
     fee_account: Address,
@@ -74,6 +78,146 @@ pub struct MempoolIO {
     pubdata_limit: u64,
     last_batch_protocol_version: Option<ProtocolVersionId>,
     settlement_mode: SettlementModeResource,
+}
+
+#[derive(Debug)]
+struct DynamicBatchSealer {
+    config: DynamicBatchingConfig,
+    n_max: usize,
+    current_lambda_ema: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DynamicSealDecision {
+    optimal_n: usize,
+    lambda_ema: f64,
+    cost_per_tx: f64,
+    total_latency: f64,
+    penalty: f64,
+}
+
+impl DynamicBatchSealer {
+    fn new(config: DynamicBatchingConfig, n_max: usize) -> Self {
+        Self {
+            config,
+            n_max,
+            current_lambda_ema: 0.1,
+        }
+    }
+
+    fn should_seal(
+        &mut self,
+        tx_count: usize,
+        l1_batch_timestamp: u64,
+        fee_input: zksync_types::fee_model::BatchFeeInput,
+    ) -> Option<DynamicSealDecision> {
+        if tx_count == 0 {
+            return None;
+        }
+
+        let elapsed_secs = (millis_since(l1_batch_timestamp) as f64 / 1_000.0).max(1e-3);
+        let instantaneous_lambda = (tx_count as f64 / elapsed_secs).max(1e-3);
+        let alpha = self.config.lambda_ema_alpha;
+        self.current_lambda_ema =
+            alpha * instantaneous_lambda + (1.0 - alpha) * self.current_lambda_ema;
+
+        let optimal_n = self.find_optimal_target(self.current_lambda_ema, fee_input);
+        if tx_count >= optimal_n.optimal_n {
+            Some(optimal_n)
+        } else {
+            None
+        }
+    }
+
+    fn find_optimal_target(
+        &self,
+        lambda: f64,
+        fee_input: zksync_types::fee_model::BatchFeeInput,
+    ) -> DynamicSealDecision {
+        let l1_gas_price = fee_input.l1_gas_price() as f64;
+        let blob_fee_per_byte = fee_input.fair_pubdata_price() as f64;
+
+        let step = self.config.grid_step.max(1);
+        let mut best = DynamicSealDecision {
+            optimal_n: self.config.n_min.max(1).min(self.n_max),
+            lambda_ema: lambda,
+            cost_per_tx: 0.0,
+            total_latency: 0.0,
+            penalty: f64::INFINITY,
+        };
+
+        for n in (self.config.n_min.max(1)..=self.n_max).step_by(step) {
+            let (cost_per_tx, total_latency, penalty) =
+                self.calculate_penalty_score(n as f64, lambda, l1_gas_price, blob_fee_per_byte);
+            if penalty < best.penalty {
+                best = DynamicSealDecision {
+                    optimal_n: n,
+                    lambda_ema: lambda,
+                    cost_per_tx,
+                    total_latency,
+                    penalty,
+                };
+            }
+        }
+        best
+    }
+
+    fn calculate_penalty_score(
+        &self,
+        n: f64,
+        lambda: f64,
+        l1_gas_price: f64,
+        blob_fee_per_byte: f64,
+    ) -> (f64, f64, f64) {
+        let fixed_cost = (self.config.l1_verify_gas as f64) * l1_gas_price;
+        let total_bytes = n * self.config.bytes_per_tx as f64;
+        let blob_size = self.config.blob_size_bytes.max(1) as f64;
+        let blobs_needed = (total_bytes / blob_size).ceil();
+        let blob_cost = blobs_needed * blob_size * blob_fee_per_byte;
+        let cost_per_tx = (fixed_cost + blob_cost) / n.max(1.0);
+
+        let wait_time = n / (2.0 * lambda.max(1e-3));
+        let proving_time = self.config.prover_fixed_seconds + n * self.config.prover_seconds_per_tx;
+        let total_latency = wait_time + proving_time + self.config.l1_settlement_seconds;
+
+        let penalty = cost_per_tx + self.config.gamma * total_latency;
+        (cost_per_tx, total_latency, penalty)
+    }
+}
+
+fn append_dynamic_decision_csv(
+    csv_path: &str,
+    l1_batch_number: u32,
+    tx_count: usize,
+    decision: DynamicSealDecision,
+) -> anyhow::Result<()> {
+    let path = PathBuf::from(csv_path);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let file_exists = path.exists();
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    if !file_exists {
+        writeln!(
+            file,
+            "timestamp_ms,l1_batch_number,tx_count,optimal_n,lambda_ema,cost_per_tx,total_latency,penalty"
+        )?;
+    }
+    writeln!(
+        file,
+        "{},{},{},{},{:.10},{:.10},{:.10},{:.10}",
+        millis_since_epoch(),
+        l1_batch_number,
+        tx_count,
+        decision.optimal_n,
+        decision.lambda_ema,
+        decision.cost_per_tx,
+        decision.total_latency,
+        decision.penalty
+    )?;
+    Ok(())
 }
 
 #[async_trait]
@@ -96,6 +240,39 @@ impl IoSealCriteria for MempoolIO {
             .await?
         {
             return Ok(true);
+        }
+
+        if let Some(sealer) = &mut self.dynamic_batch_sealer {
+            let tx_count = manager.pending_executed_transactions_len();
+            let fee_input = self.batch_fee_input_provider.get_batch_fee_input().await?;
+            if let Some(decision) = sealer.should_seal(tx_count, manager.l1_batch_timestamp(), fee_input)
+            {
+                AGGREGATION_METRICS.l1_batch_reason_inc_criterion("dynamic_optimal");
+                AGGREGATION_METRICS.record_dynamic_decision(
+                    decision.optimal_n,
+                    decision.lambda_ema,
+                    decision.penalty,
+                    decision.cost_per_tx,
+                    decision.total_latency,
+                );
+                if let Some(csv_path) = &sealer.config.metrics_csv_path {
+                    append_dynamic_decision_csv(
+                        csv_path,
+                        manager.l1_batch_number().0,
+                        tx_count,
+                        decision,
+                    )?;
+                }
+                tracing::debug!(
+                    "Dynamic batch trigger: tx_count={tx_count}, optimal_n={}, lambda_ema={:.4}, cost_per_tx={:.4}, total_latency={:.4}, penalty={:.4}",
+                    decision.optimal_n,
+                    decision.lambda_ema,
+                    decision.cost_per_tx,
+                    decision.total_latency,
+                    decision.penalty
+                );
+                return Ok(true);
+            }
         }
 
         Ok(false)
@@ -513,12 +690,29 @@ impl MempoolIO {
         pubdata_type: PubdataType,
         settlement_mode: SettlementModeResource,
     ) -> anyhow::Result<Self> {
+        let slots_n_max = config.seal_criteria.transaction_slots.max(1);
+        let dynamic_n_max = config
+            .dynamic_batching
+            .n_max
+            .unwrap_or(slots_n_max)
+            .min(slots_n_max)
+            .max(1);
+        let dynamic_batch_sealer = if config.dynamic_batching.enabled {
+            Some(DynamicBatchSealer::new(
+                config.dynamic_batching.clone(),
+                dynamic_n_max,
+            ))
+        } else {
+            None
+        };
+
         Ok(Self {
             mempool,
             pool: pool.clone(),
             timeout_sealer: TimeoutSealer::new(config),
             l2_block_max_payload_size_sealer: L2BlockMaxPayloadSizeSealer::new(config),
             protocol_upgrade_sealer: ProtocolUpgradeSealer::new(pool),
+            dynamic_batch_sealer,
             filter: L2TxFilter::default(),
             // ^ Will be initialized properly on the first newly opened batch
             l1_batch_params_provider: L1BatchParamsProvider::uninitialized(),
