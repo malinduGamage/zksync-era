@@ -1,0 +1,39 @@
+[package]
+name = "batch_calibration"
+description = "Offline calibration pipeline for batch cost and latency models"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
+itertools.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sqlx = { workspace = true, features = [
+  "runtime-tokio",
+  "tls-native-tls",
+  "postgres",
+  "bigdecimal",
+  "chrono",
+  "json",
+] }
+structopt.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+
+zksync_basic_types.workspace = true
+zksync_dal.workspace = true
+zksync_db_connection.workspace = true
+zksync_prover_dal = { path = "../../../prover/crates/lib/prover_dal" }
+
+[dev-dependencies]
+tempfile.workspace = true
+

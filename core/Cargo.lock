@@ -2277,6 +2277,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "batch_calibration"
+version = "29.16.0-non-semver-compat"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "itertools 0.13.0",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "structopt",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "zksync_basic_types",
+ "zksync_dal",
+ "zksync_db_connection",
+ "zksync_prover_dal",
+]
+
+[[package]]
 name = "bech32"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15096,6 +15116,17 @@ dependencies = [
  "protox 0.5.1",
  "quote 1.0.40",
  "syn 2.0.104",
+]
+
+[[package]]
+name = "zksync_prover_dal"
+version = "25.3.0"
+dependencies = [
+ "sqlx",
+ "strum 0.26.3",
+ "tokio",
+ "zksync_basic_types",
+ "zksync_db_connection",
 ]
 
 [[package]]
