@@ -104,9 +104,9 @@ impl Executor for ProofFriCompressorExecutor {
             .compression_time
             .observe(start_time.elapsed());
         tracing::info!(
-            "Finished proof fri compression for job: {:?} took: {:?}",
-            l1_batch_id,
-            start_time.elapsed()
+            l1_batch = %l1_batch_id,
+            compression_time = ?start_time.elapsed(),
+            "Finished proof fri compression"
         );
         Ok(l1_batch_proof)
     }

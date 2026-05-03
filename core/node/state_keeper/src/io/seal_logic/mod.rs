@@ -29,8 +29,8 @@ use zksync_types::{
 use crate::{
     io::seal_logic::l2_block_seal_subtasks::L2BlockSealProcess,
     metrics::{
-        L1BatchSealStage, L2BlockSealStage, TxExecutionType, KEEPER_METRICS, L1_BATCH_METRICS,
-        L2_BLOCK_METRICS,
+        L1BatchSealStage, L2BlockSealStage, TxExecutionType, BATCH_TELEMETRY_METRICS,
+        KEEPER_METRICS, L1_BATCH_METRICS, L2_BLOCK_METRICS,
     },
     updates::{L2BlockSealCommand, UpdatesManager},
 };
@@ -253,6 +253,7 @@ impl UpdatesManager {
         );
 
         self.report_l1_batch_metrics(started_at, &writes_metrics);
+        BATCH_TELEMETRY_METRICS.record_batch_summary(self, finished_batch, started_at);
         Ok(())
     }
 

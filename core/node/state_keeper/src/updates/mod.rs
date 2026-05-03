@@ -345,6 +345,17 @@ impl UpdatesManager {
                 .sum::<usize>()
     }
 
+    pub(crate) fn pending_payload_encoding_size(&self) -> usize {
+        self.pending_l2_blocks
+            .iter()
+            .map(|b| b.payload_encoding_size)
+            .sum()
+    }
+
+    pub(crate) fn pending_l2_blocks(&self) -> &VecDeque<L2BlockUpdates> {
+        &self.pending_l2_blocks
+    }
+
     pub(crate) fn header_for_first_pending_block(&self) -> L2BlockHeader {
         let block = self.first_pending_l2_block();
         let progress = L2_BLOCK_METRICS.start(
@@ -468,6 +479,10 @@ impl UpdatesManager {
 
     pub fn batch_fee_input(&self) -> BatchFeeInput {
         self.batch_fee_input
+    }
+
+    pub fn base_fee_per_gas(&self) -> u64 {
+        self.base_fee_per_gas
     }
 
     pub fn interop_fee(&self) -> U256 {

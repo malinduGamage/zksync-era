@@ -2,7 +2,7 @@
 
 use std::{
     sync::{Mutex, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use vise::{
@@ -10,10 +10,11 @@ use vise::{
     LatencyObserver, Metrics, Unit,
 };
 use zksync_mempool::MempoolStore;
-use zksync_multivm::interface::{DeduplicatedWritesMetrics, VmRevertReason};
-use zksync_types::ProtocolVersionId;
+use zksync_multivm::interface::{DeduplicatedWritesMetrics, FinishedL1Batch, VmRevertReason};
+use zksync_types::{helpers::unix_timestamp_ms, ProtocolVersionId};
 
 use super::seal_criteria::SealResolution;
+use crate::updates::UpdatesManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue, EncodeLabelSet)]
 #[metrics(label = "stage", rename_all = "snake_case")]
@@ -483,4 +484,145 @@ pub struct UpdatesManagerMetrics {
 
 #[vise::register]
 pub(crate) static UPDATES_MANAGER_METRICS: vise::Global<UpdatesManagerMetrics> =
+    vise::Global::new();
+
+/// Metrics and logs for batch-level sealing telemetry.
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "server_state_keeper_batch")]
+pub(crate) struct BatchTelemetryMetrics {
+    /// Time from transaction receipt to L1 batch seal, split by tx type.
+    #[metrics(buckets = Buckets::LATENCIES)]
+    tx_finality_delay: Family<TxExecutionType, Histogram<Duration>>,
+    /// Total time spent sealing the batch.
+    #[metrics(buckets = Buckets::LATENCIES)]
+    pub seal_time: Histogram<Duration>,
+    /// Number of transactions in the batch.
+    #[metrics(buckets = COUNT_BUCKETS)]
+    pub tx_count: Histogram<usize>,
+    /// Number of L1 transactions in the batch.
+    #[metrics(buckets = COUNT_BUCKETS)]
+    pub l1_tx_count: Histogram<usize>,
+    /// Number of L2 transactions in the batch.
+    #[metrics(buckets = COUNT_BUCKETS)]
+    pub l2_tx_count: Histogram<usize>,
+    /// Bootloader-encoded bytes accumulated in the batch.
+    #[metrics(buckets = COUNT_BUCKETS)]
+    pub bootloader_bytes: Histogram<usize>,
+    /// Consensus payload bytes accumulated in the batch.
+    #[metrics(buckets = COUNT_BUCKETS)]
+    pub payload_bytes: Histogram<usize>,
+    /// Actual pubdata bytes included in the batch commitment.
+    #[metrics(buckets = COUNT_BUCKETS)]
+    pub pubdata_input_bytes: Histogram<usize>,
+    /// Absolute pubdata growth reconstructed from execution state.
+    #[metrics(buckets = COUNT_BUCKETS)]
+    pub pubdata_growth_bytes: Histogram<usize>,
+    /// Ratio of pubdata bytes to full blob capacity.
+    #[metrics(buckets = Buckets::ZERO_TO_ONE, unit = Unit::Ratios)]
+    pub blob_utilization: Histogram<f64>,
+    /// Total gas used by the batch's execution metrics.
+    #[metrics(buckets = COUNT_BUCKETS)]
+    pub gas_used: Histogram<usize>,
+}
+
+impl BatchTelemetryMetrics {
+    fn record_tx_finality_delay(&self, manager: &UpdatesManager) {
+        let seal_timestamp_ms = unix_timestamp_ms();
+
+        for block in manager.pending_l2_blocks() {
+            for tx in &block.executed_transactions {
+                let delay_ms =
+                    seal_timestamp_ms.saturating_sub(tx.transaction.received_timestamp_ms);
+                let delay = Duration::from_millis(delay_ms);
+                self.tx_finality_delay[&TxExecutionType::from_is_l1(tx.transaction.is_l1())]
+                    .observe(delay);
+            }
+        }
+    }
+
+    pub(crate) fn record_batch_summary(
+        &self,
+        manager: &UpdatesManager,
+        finished_batch: &FinishedL1Batch,
+        seal_started_at: Instant,
+    ) {
+        let tx_count = manager.pending_executed_transactions_len();
+        let l1_tx_count = manager.pending_l1_transactions_len();
+        let l2_tx_count = tx_count.saturating_sub(l1_tx_count);
+        let bootloader_bytes = manager.pending_txs_encoding_size();
+        let payload_bytes = manager.pending_payload_encoding_size();
+        let gas_used = manager.pending_execution_metrics().gas_used as usize;
+        let pubdata_input_bytes = finished_batch
+            .pubdata_input
+            .as_ref()
+            .map_or(0, |pubdata| pubdata.len());
+        let pubdata_growth_bytes = finished_batch
+            .final_execution_state
+            .pubdata_costs
+            .iter()
+            .map(|value| value.unsigned_abs() as usize)
+            .sum::<usize>();
+        let blob_capacity = if pubdata_input_bytes == 0 {
+            0
+        } else {
+            pubdata_input_bytes.div_ceil(kzg::ZK_SYNC_BYTES_PER_BLOB) * kzg::ZK_SYNC_BYTES_PER_BLOB
+        };
+        let blob_utilization = if blob_capacity == 0 {
+            0.0
+        } else {
+            pubdata_input_bytes as f64 / blob_capacity as f64
+        };
+
+        self.record_tx_finality_delay(manager);
+        self.seal_time.observe(seal_started_at.elapsed());
+        self.tx_count.observe(tx_count);
+        self.l1_tx_count.observe(l1_tx_count);
+        self.l2_tx_count.observe(l2_tx_count);
+        self.bootloader_bytes.observe(bootloader_bytes);
+        self.payload_bytes.observe(payload_bytes);
+        self.pubdata_input_bytes.observe(pubdata_input_bytes);
+        self.pubdata_growth_bytes.observe(pubdata_growth_bytes);
+        self.blob_utilization.observe(blob_utilization);
+        self.gas_used.observe(gas_used);
+
+        let batch_fee_input = manager.batch_fee_input();
+        let base_fee_per_gas = manager.base_fee_per_gas();
+        let estimated_cost_per_tx = if tx_count == 0 {
+            0u128
+        } else {
+            let total_gas_cost =
+                manager.pending_execution_metrics().gas_used as u128 * base_fee_per_gas as u128;
+            let total_pubdata_cost =
+                pubdata_input_bytes as u128 * batch_fee_input.fair_pubdata_price() as u128;
+            (total_gas_cost + total_pubdata_cost) / tx_count as u128
+        };
+
+        tracing::info!(
+            l1_batch = %manager.l1_batch_number(),
+            seal_time = ?seal_started_at.elapsed(),
+            tx_count,
+            l1_tx_count,
+            l2_tx_count,
+            bootloader_bytes,
+            payload_bytes,
+            pubdata_input_bytes,
+            pubdata_growth_bytes,
+            blob_capacity,
+            blob_utilization = %blob_utilization,
+            gas_used,
+            base_fee_per_gas,
+            fair_l2_gas_price = batch_fee_input.fair_l2_gas_price(),
+            fair_pubdata_price = batch_fee_input.fair_pubdata_price(),
+            l1_gas_price = batch_fee_input.l1_gas_price(),
+            interop_fee = %manager.interop_fee(),
+            pubdata_limit = ?manager.pubdata_limit(),
+            settlement_layer = ?manager.settlement_layer(),
+            estimated_cost_per_tx = %estimated_cost_per_tx,
+            "Batch telemetry snapshot"
+        );
+    }
+}
+
+#[vise::register]
+pub(crate) static BATCH_TELEMETRY_METRICS: vise::Global<BatchTelemetryMetrics> =
     vise::Global::new();

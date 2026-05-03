@@ -58,12 +58,12 @@ impl Executor for GpuCircuitProverExecutor {
             .prove(witness_vector, setup_data)
             .context("failed to gpu prove circuit")?;
         tracing::info!(
-            "Finished executing gpu circuit prover job {}, on batch {}, for circuit {}, at round {} after {:?}",
-            metadata.id,
-            metadata.batch_id,
-            metadata.circuit_id,
-            metadata.aggregation_round,
-            start_time.elapsed()
+            job_id = metadata.id,
+            batch_id = metadata.batch_id,
+            circuit_id = metadata.circuit_id,
+            aggregation_round = metadata.aggregation_round,
+            proving_time = ?start_time.elapsed(),
+            "Finished executing gpu circuit prover job"
         );
         CIRCUIT_PROVER_METRICS
             .prove_and_verify_time

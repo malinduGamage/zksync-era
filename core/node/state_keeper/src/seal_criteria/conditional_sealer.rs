@@ -124,6 +124,32 @@ impl ConditionalSealer for SequencerSealer {
                 tx_data,
                 protocol_version,
             );
+            let capacity_filled = sealer.capacity_filled(
+                &self.config,
+                tx_count,
+                l1_tx_count,
+                interop_roots_count,
+                block_data,
+                protocol_version,
+            );
+            tracing::debug!(
+                l1_batch = l1_batch_number,
+                criterion = sealer.prom_criterion_name(),
+                tx_count,
+                l1_tx_count,
+                interop_roots_count,
+                tx_cumulative_size = tx_data.cumulative_size,
+                block_cumulative_size = block_data.cumulative_size,
+                tx_gas_remaining = tx_data.gas_remaining,
+                block_gas_remaining = block_data.gas_remaining,
+                tx_pubdata_published = tx_data.execution_metrics.pubdata_published,
+                block_pubdata_published = block_data.execution_metrics.pubdata_published,
+                tx_circuits = tx_data.execution_metrics.circuit_statistic.total(),
+                block_circuits = block_data.execution_metrics.circuit_statistic.total(),
+                capacity_filled = ?capacity_filled,
+                resolution = ?seal_resolution,
+                "Shadow seal decision"
+            );
             match &seal_resolution {
                 SealResolution::IncludeAndSeal
                 | SealResolution::ExcludeAndSeal
